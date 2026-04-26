@@ -14,6 +14,10 @@ use wasm_bindgen::prelude::*;
 
 pub mod mesh;
 
+/// Represents a single vertex in a mesh.
+///
+/// Contains a 4D position vector. The `w` component is utilized by shaders
+/// to determine the type of object the vertex belongs to (e.g., terrain vs clouds).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, Default)]
 pub struct Vertex {
@@ -33,6 +37,10 @@ impl Vertex {
     }
 }
 
+/// Uniform buffer data passed to the shaders.
+///
+/// Contains the Model-View-Projection matrix and a time-based offset
+/// used for animating the procedural generation.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct UniformBufferObject {
@@ -41,6 +49,10 @@ pub struct UniformBufferObject {
     pub padding: [f32; 3],
 }
 
+/// Holds the application and graphics state.
+///
+/// Contains all `wgpu` resources including the device, queue, surface,
+/// rendering pipelines, buffers for terrain and clouds, and timing info.
 struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
@@ -452,6 +464,10 @@ impl<'a> State<'a> {
     }
 }
 
+/// Initializes the application and runs the main event loop.
+///
+/// This sets up the window, logging, and starts the `winit` event loop
+/// to handle rendering and window events.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
 pub async fn run() {
     cfg_if::cfg_if! {

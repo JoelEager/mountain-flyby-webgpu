@@ -1,5 +1,10 @@
 use crate::Vertex;
 
+/// Generates a procedural terrain mesh grid.
+///
+/// The terrain consists of a 2D grid of vertices. The height (y-coordinate)
+/// and color are computed entirely in the vertex shader. The `w` component of
+/// the position vector is set to 1.0 to indicate that this is the terrain.
 pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
     // The mesh will have this many vertices per side
     let width = 128;
@@ -46,6 +51,12 @@ pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+/// Generates a procedural cloud mesh grid.
+///
+/// Similar to the terrain, the cloud mesh is a 2D grid. The actual shape and
+/// appearance of the clouds are generated procedurally in the shaders.
+/// The `w` component of the position vector is set to 2.0 to indicate that
+/// this mesh represents the clouds.
 pub fn generate_clouds() -> (Vec<Vertex>, Vec<u32>) {
     // The mesh will have this many vertices per side
     let width = 256;
