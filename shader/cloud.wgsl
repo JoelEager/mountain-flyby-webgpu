@@ -1,7 +1,6 @@
 struct UniformBufferObject {
     mvp: mat4x4<f32>,
     offset: f32,
-    padding: vec3<f32>,
 };
 
 @group(0) @binding(0)

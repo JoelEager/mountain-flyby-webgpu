@@ -2,7 +2,6 @@
 struct UniformBufferObject {
     mvp: mat4x4<f32>,
     offset: f32,
-    padding: vec3<f32>, // Pad to 16 bytes alignment
 };
 
 @group(0) @binding(0)
