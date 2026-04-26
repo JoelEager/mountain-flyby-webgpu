@@ -1,24 +1,54 @@
 # Mountain Flyby
-A procedurally generated graphics demo implemented in Rust. Targets [Vulkan](https://docs.vulkan.org/guide/latest/what_is_vulkan.html)
-and tested on an AMD RX 6750, though it should compatible with most GPUs. 
+A procedurally generated graphics demo implemented in Rust. Originally targeted Vulkan, now completely rewritten to use WebGPU via `wgpu` to target both native execution and WebAssembly in the browser.
 Developed using [Google Jules](https://jules.google.com/).
 
-## Setup
-The `ash` crate requires that the Vulkan API be present on the path. For 
-installation instructions see the crate's read me [here](https://github.com/ash-rs/ash/blob/3eb2ebc6ec35400e69d54ae1ecd862f0999aaba2/README.md#example).
-
-Once that is done you can compile and run the application via `cargo run`.
-
-## Compiling Shaders
-The project comes with pre-compiled SPIR-V shaders (`.spv` files), so you don't 
-need to compile them to run the demo. However, if you modify the GLSL shaders 
-(`.vert` or `.frag`), you will need to recompile them.
-
-You can use `glslc` (included in the Vulkan SDK) to compile the shaders:
+## Native Setup
+Running the application natively is straightforward as `wgpu` handles the graphics backend automatically.
 
 ```bash
-glslangValidator -V shader/terrain.vert -o shader/terrain_vert.spv
-glslangValidator -V shader/terrain.frag -o shader/terrain_frag.spv
-glslangValidator -V shader/cloud.vert -o shader/cloud_vert.spv
-glslangValidator -V shader/cloud.frag -o shader/cloud_frag.spv
+cargo run
 ```
+
+## WebAssembly Setup
+To run the demo in a browser via WebAssembly, you need to install `wasm-pack`.
+
+1. Install `wasm-pack`:
+   ```bash
+   cargo install wasm-pack
+   ```
+
+2. Build the project for the web:
+   ```bash
+   wasm-pack build --target web
+   ```
+
+3. Create an `index.html` file in the root of the project with the following content:
+   ```html
+   <!DOCTYPE html>
+   <html lang="en">
+   <head>
+       <meta charset="UTF-8">
+       <title>Mountain Flyby</title>
+       <style>
+           body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; }
+           canvas { display: block; max-width: 100%; max-height: 100vh; }
+       </style>
+   </head>
+   <body id="wasm-example">
+       <script type="module">
+           import init from './pkg/mountain_flyby.js';
+           init();
+       </script>
+   </body>
+   </html>
+   ```
+
+4. Serve the directory with an HTTP server (e.g., using Python 3):
+   ```bash
+   python3 -m http.server 8000
+   ```
+
+5. Open your browser and navigate to `http://localhost:8000`.
+
+## Shaders
+The project uses WGSL shaders (`.wgsl` files) located in the `shader/` directory. They are compiled at runtime by `wgpu`, so there is no need to manually pre-compile them.

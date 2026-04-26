@@ -1,0 +1,17 @@
+<<<<<<< SEARCH
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct UniformBufferObject {
+    pub mvp: [f32; 16],
+    pub offset: f32,
+    pub padding: [f32; 3], // Pad to 16 byte alignment
+}
+=======
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct UniformBufferObject {
+    pub mvp: [f32; 16],
+    pub offset: f32,
+    pub padding: [f32; 3], // Pad to 16 byte alignment
+}
+>>>>>>> REPLACE

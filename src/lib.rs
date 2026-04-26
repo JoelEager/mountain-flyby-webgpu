@@ -1,662 +1,527 @@
-#![warn(
-    clippy::use_self,
-    deprecated_in_future,
-    rust_2018_idioms,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_qualifications
-)]
-
-use std::{
-    borrow::Cow, cell::RefCell, default::Default, error::Error, ffi, ops::Drop, os::raw::c_char,
-};
-
-use ash::{
-    Device, Entry, Instance,
-    ext::debug_utils,
-    khr::{surface, swapchain},
-    util::Align,
-    vk,
-};
+use std::iter;
+use std::time::Instant;
+use bytemuck::{Pod, Zeroable};
+use cgmath::{Deg, Matrix4, Point3, Vector3};
 use winit::{
-    event::{ElementState, Event, KeyEvent, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event::*,
+    event_loop::EventLoop,
     keyboard::{Key, NamedKey},
-    platform::run_on_demand::EventLoopExtRunOnDemand,
-    raw_window_handle::{HasDisplayHandle, HasWindowHandle},
-    window::WindowBuilder,
+    window::{WindowBuilder, Window},
 };
 
-/// Helper function for submitting command buffers. Immediately waits for the fence before the command buffer
-/// is executed. That way we can delay the waiting for the fences by 1 frame which is good for performance.
-/// Make sure to create the fence in a signaled state on the first use.
-#[allow(clippy::too_many_arguments)]
-pub fn record_submit_commandbuffer<F: FnOnce(&Device, vk::CommandBuffer)>(
-    device: &Device,
-    command_buffer: vk::CommandBuffer,
-    command_buffer_reuse_fence: vk::Fence,
-    submit_queue: vk::Queue,
-    wait_mask: &[vk::PipelineStageFlags],
-    wait_semaphores: &[vk::Semaphore],
-    signal_semaphores: &[vk::Semaphore],
-    f: F,
-) {
-    unsafe {
-        device
-            .wait_for_fences(&[command_buffer_reuse_fence], true, u64::MAX)
-            .expect("Wait for fence failed.");
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
-        device
-            .reset_fences(&[command_buffer_reuse_fence])
-            .expect("Reset fences failed.");
+pub mod mesh;
 
-        device
-            .reset_command_buffer(
-                command_buffer,
-                vk::CommandBufferResetFlags::RELEASE_RESOURCES,
-            )
-            .expect("Reset command buffer failed.");
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, Default)]
+pub struct Vertex {
+    pub pos: [f32; 4],
+}
 
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+impl Vertex {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 1] =
+        wgpu::vertex_attr_array![0 => Float32x4];
 
-        device
-            .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-            .expect("Begin commandbuffer");
-        f(device, command_buffer);
-        device
-            .end_command_buffer(command_buffer)
-            .expect("End commandbuffer");
-
-        let command_buffers = vec![command_buffer];
-
-        let submit_info = vk::SubmitInfo::default()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(wait_mask)
-            .command_buffers(&command_buffers)
-            .signal_semaphores(signal_semaphores);
-
-        device
-            .queue_submit(submit_queue, &[submit_info], command_buffer_reuse_fence)
-            .expect("queue submit failed.");
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBUTES,
+        }
     }
 }
 
-unsafe extern "system" fn vulkan_debug_callback(
-    message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
-    _user_data: *mut std::os::raw::c_void,
-) -> vk::Bool32 {
-    let callback_data = unsafe { *p_callback_data };
-    let message_id_number = callback_data.message_id_number;
-
-    let message_id_name = if callback_data.p_message_id_name.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { ffi::CStr::from_ptr(callback_data.p_message_id_name) }.to_string_lossy()
-    };
-
-    let message = if callback_data.p_message.is_null() {
-        Cow::from("")
-    } else {
-        unsafe { ffi::CStr::from_ptr(callback_data.p_message) }.to_string_lossy()
-    };
-
-    println!(
-        "{message_severity:?}:\n{message_type:?} [{message_id_name} ({message_id_number})] : {message}\n",
-    );
-
-    vk::FALSE
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct UniformBufferObject {
+    pub mvp: [[f32; 4]; 4],
+    pub offset: f32,
+    pub padding: [f32; 3],
 }
 
-/// # Safety
-/// This function executes unsafe Vulkan API calls. It relies on the provided `base` holding
-/// valid handles, and the allocated buffer memory being successfully retrieved and bound.
-pub unsafe fn create_device_local_buffer<T: Copy>(
-    base: &VulkanBase,
-    data: &[T],
-    usage: vk::BufferUsageFlags,
-) -> (vk::Buffer, vk::DeviceMemory) {
-    unsafe {
-        let buffer_info = vk::BufferCreateInfo::default()
-            .size(size_of_val(data) as u64)
-            .usage(usage)
-            .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let buffer = base.device.create_buffer(&buffer_info, None).unwrap();
-        let memory_req = base.device.get_buffer_memory_requirements(buffer);
-        let memory_index = find_memorytype_index(
-            &memory_req,
-            &base.device_memory_properties,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        )
-        .expect("Unable to find suitable memorytype for the buffer.");
-        let allocate_info = vk::MemoryAllocateInfo::default()
-            .allocation_size(memory_req.size)
-            .memory_type_index(memory_index);
-        let memory = base.device.allocate_memory(&allocate_info, None).unwrap();
-        let ptr: *mut std::os::raw::c_void = base
-            .device
-            .map_memory(memory, 0, memory_req.size, vk::MemoryMapFlags::empty())
+struct State<'a> {
+    surface: wgpu::Surface<'a>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: winit::dpi::PhysicalSize<u32>,
+    window: &'a Window,
+    terrain_pipeline: wgpu::RenderPipeline,
+    cloud_pipeline: wgpu::RenderPipeline,
+    terrain_vertex_buffer: wgpu::Buffer,
+    terrain_index_buffer: wgpu::Buffer,
+    terrain_num_indices: u32,
+    cloud_vertex_buffer: wgpu::Buffer,
+    cloud_index_buffer: wgpu::Buffer,
+    cloud_num_indices: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    depth_view: wgpu::TextureView,
+    #[cfg(target_arch = "wasm32")]
+    start_time_wasm: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    start_time: Instant,
+}
+
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+fn create_depth_texture(
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width: config.width.max(1),
+        height: config.height.max(1),
+        depth_or_array_layers: 1,
+    };
+    let desc = wgpu::TextureDescriptor {
+        label: Some("Depth Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    let texture = device.create_texture(&desc);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+impl<'a> State<'a> {
+    async fn new(window: &'a Window) -> State<'a> {
+        let size = window.inner_size();
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window).unwrap();
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
             .unwrap();
-        let mut slice = Align::new(ptr, align_of::<T>() as u64, memory_req.size);
-        slice.copy_from_slice(data);
-        base.device.unmap_memory(memory);
-        base.device.bind_buffer_memory(buffer, memory, 0).unwrap();
-        (buffer, memory)
-    }
-}
 
-pub fn find_memorytype_index(
-    memory_req: &vk::MemoryRequirements,
-    memory_prop: &vk::PhysicalDeviceMemoryProperties,
-    flags: vk::MemoryPropertyFlags,
-) -> Option<u32> {
-    memory_prop.memory_types[..memory_prop.memory_type_count as _]
-        .iter()
-        .enumerate()
-        .find(|(index, memory_type)| {
-            (1 << index) & memory_req.memory_type_bits != 0
-                && memory_type.property_flags & flags == flags
-        })
-        .map(|(index, _memory_type)| index as _)
-}
-
-/// `VulkanBase` encapsulates the common Vulkan setup and boilerplate.
-/// It creates the Vulkan instance, debug messenger, surface, physical and logical devices,
-/// swapchain, command pool, and synchronization primitives needed for rendering.
-pub struct VulkanBase {
-    pub entry: Entry,
-    pub instance: Instance,
-    pub device: Device,
-    pub surface_loader: surface::Instance,
-    pub swapchain_loader: swapchain::Device,
-    pub debug_utils_loader: debug_utils::Instance,
-    pub window: winit::window::Window,
-    pub event_loop: RefCell<EventLoop<()>>,
-    pub debug_call_back: vk::DebugUtilsMessengerEXT,
-
-    pub pdevice: vk::PhysicalDevice,
-    pub device_memory_properties: vk::PhysicalDeviceMemoryProperties,
-    pub queue_family_index: u32,
-    pub present_queue: vk::Queue,
-
-    pub surface: vk::SurfaceKHR,
-    pub surface_format: vk::SurfaceFormatKHR,
-    pub surface_resolution: vk::Extent2D,
-
-    pub swapchain: vk::SwapchainKHR,
-    pub present_images: Vec<vk::Image>,
-    pub present_image_views: Vec<vk::ImageView>,
-
-    pub pool: vk::CommandPool,
-    pub draw_command_buffers: Vec<vk::CommandBuffer>,
-    pub setup_command_buffer: vk::CommandBuffer,
-
-    pub depth_image: vk::Image,
-    pub depth_image_view: vk::ImageView,
-    pub depth_image_memory: vk::DeviceMemory,
-
-    pub present_complete_semaphores: Vec<vk::Semaphore>,
-    pub rendering_complete_semaphores: Vec<vk::Semaphore>,
-
-    pub draw_commands_reuse_fences: Vec<vk::Fence>,
-    pub setup_commands_reuse_fence: vk::Fence,
-}
-
-impl VulkanBase {
-    pub fn render_loop<F: FnMut()>(&self, mut f: F) -> Result<(), impl Error> {
-        self.event_loop.borrow_mut().run_on_demand(|event, elwp| {
-            elwp.set_control_flow(ControlFlow::Poll);
-            match event {
-                Event::WindowEvent {
-                    event:
-                        WindowEvent::CloseRequested
-                        | WindowEvent::KeyboardInput {
-                            event:
-                                KeyEvent {
-                                    state: ElementState::Pressed,
-                                    logical_key: Key::Named(NamedKey::Escape),
-                                    ..
-                                },
-                            ..
-                        },
-                    ..
-                } => {
-                    elwp.exit();
-                }
-                Event::AboutToWait => f(),
-                _ => (),
-            }
-        })
-    }
-
-    /// Initializes the Vulkan environment and window system.
-    /// This includes:
-    /// - Creating a winit event loop and window.
-    /// - Creating a Vulkan Instance with required extensions.
-    /// - Setting up a Debug Utils Messenger.
-    /// - Selecting a suitable Physical Device (GPU).
-    /// - Creating a Logical Device and queues.
-    /// - Setting up the Swapchain and its images.
-    /// - Creating a Command Pool and allocating Command Buffers.
-    /// - Creating a Depth Buffer image and view.
-    /// - Creating synchronization primitives (semaphores, fences).
-    pub fn new(window_width: u32, window_height: u32) -> Result<Self, Box<dyn Error>> {
-        unsafe {
-            let event_loop = EventLoop::new()?;
-            let window = WindowBuilder::new()
-                .with_title("Mountain Flyby Demo")
-                .with_position(winit::dpi::LogicalPosition::new(10.0, 10.0))
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    f64::from(window_width),
-                    f64::from(window_height),
-                ))
-                .build(&event_loop)
-                .unwrap();
-            let entry = Entry::linked();
-            let app_name = c"MountainFlyby";
-
-            let layer_names = [c"VK_LAYER_KHRONOS_validation"];
-            let layers_names_raw: Vec<*const c_char> = layer_names
-                .iter()
-                .map(|raw_name| raw_name.as_ptr())
-                .collect();
-
-            let mut extension_names =
-                ash_window::enumerate_required_extensions(window.display_handle()?.as_raw())
-                    .unwrap()
-                    .to_vec();
-            extension_names.push(debug_utils::NAME.as_ptr());
-
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
-            {
-                extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
-                // Enabling this extension is a requirement when using `VK_KHR_portability_subset`
-                extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
-            }
-
-            let appinfo = vk::ApplicationInfo::default()
-                .application_name(app_name)
-                .application_version(0)
-                .engine_name(app_name)
-                .engine_version(0)
-                .api_version(vk::make_api_version(0, 1, 0, 0));
-
-            let create_flags = if cfg!(any(target_os = "macos", target_os = "ios")) {
-                vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-            } else {
-                vk::InstanceCreateFlags::default()
-            };
-
-            let create_info = vk::InstanceCreateInfo::default()
-                .application_info(&appinfo)
-                .enabled_layer_names(&layers_names_raw)
-                .enabled_extension_names(&extension_names)
-                .flags(create_flags);
-
-            let instance: Instance = entry
-                .create_instance(&create_info, None)
-                .expect("Instance creation error");
-
-            let debug_info = vk::DebugUtilsMessengerCreateInfoEXT::default()
-                .message_severity(
-                    vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
-                        | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                        | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
-                )
-                .message_type(
-                    vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                        | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
-                        | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
-                )
-                .pfn_user_callback(Some(vulkan_debug_callback));
-
-            let debug_utils_loader = debug_utils::Instance::new(&entry, &instance);
-            let debug_call_back = debug_utils_loader
-                .create_debug_utils_messenger(&debug_info, None)
-                .unwrap();
-            let surface = ash_window::create_surface(
-                &entry,
-                &instance,
-                window.display_handle()?.as_raw(),
-                window.window_handle()?.as_raw(),
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                        .using_resolution(adapter.limits()),
+                },
                 None,
             )
+            .await
             .unwrap();
-            let pdevices = instance
-                .enumerate_physical_devices()
-                .expect("Physical device error");
-            let surface_loader = surface::Instance::new(&entry, &instance);
-            let (pdevice, queue_family_index) = pdevices
-                .iter()
-                .find_map(|pdevice| {
-                    instance
-                        .get_physical_device_queue_family_properties(*pdevice)
-                        .iter()
-                        .enumerate()
-                        .find_map(|(index, info)| {
-                            let supports_graphic_and_surface =
-                                info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                                    && surface_loader
-                                        .get_physical_device_surface_support(
-                                            *pdevice,
-                                            index as u32,
-                                            surface,
-                                        )
-                                        .unwrap();
-                            if supports_graphic_and_surface {
-                                Some((*pdevice, index))
-                            } else {
-                                None
-                            }
-                        })
-                })
-                .expect("Couldn't find suitable device.");
-            let queue_family_index = queue_family_index as u32;
-            let device_extension_names_raw = [
-                swapchain::NAME.as_ptr(),
-                #[cfg(any(target_os = "macos", target_os = "ios"))]
-                ash::khr::portability_subset::NAME.as_ptr(),
-            ];
-            let features = vk::PhysicalDeviceFeatures::default().shader_clip_distance(true);
-            let priorities = [1.0];
 
-            let queue_info = vk::DeviceQueueCreateInfo::default()
-                .queue_family_index(queue_family_index)
-                .queue_priorities(&priorities);
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
 
-            let device_create_info = vk::DeviceCreateInfo::default()
-                .queue_create_infos(std::slice::from_ref(&queue_info))
-                .enabled_extension_names(&device_extension_names_raw)
-                .enabled_features(&features);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
 
-            let device: Device = instance
-                .create_device(pdevice, &device_create_info, None)
-                .unwrap();
+        surface.configure(&device, &config);
 
-            let present_queue = device.get_device_queue(queue_family_index, 0);
+        let (_, depth_view) = create_depth_texture(&device, &config);
 
-            let surface_format = surface_loader
-                .get_physical_device_surface_formats(pdevice, surface)
-                .unwrap()[0];
+        let (terrain_vertices, terrain_indices) = mesh::generate_terrain();
+        let (cloud_vertices, cloud_indices) = mesh::generate_clouds();
 
-            let surface_capabilities = surface_loader
-                .get_physical_device_surface_capabilities(pdevice, surface)
-                .unwrap();
-            let mut desired_image_count = surface_capabilities.min_image_count + 1;
-            if surface_capabilities.max_image_count > 0
-                && desired_image_count > surface_capabilities.max_image_count
-            {
-                desired_image_count = surface_capabilities.max_image_count;
-            }
-            let surface_resolution = match surface_capabilities.current_extent.width {
-                u32::MAX => vk::Extent2D {
-                    width: window_width,
-                    height: window_height,
-                },
-                _ => surface_capabilities.current_extent,
-            };
-            let pre_transform = if surface_capabilities
-                .supported_transforms
-                .contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-            {
-                vk::SurfaceTransformFlagsKHR::IDENTITY
-            } else {
-                surface_capabilities.current_transform
-            };
-            let present_modes = surface_loader
-                .get_physical_device_surface_present_modes(pdevice, surface)
-                .unwrap();
-            let present_mode = present_modes
-                .iter()
-                .cloned()
-                .find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-                .unwrap_or(vk::PresentModeKHR::FIFO);
-            let swapchain_loader = swapchain::Device::new(&instance, &device);
+        use wgpu::util::DeviceExt;
 
-            let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-                .surface(surface)
-                .min_image_count(desired_image_count)
-                .image_color_space(surface_format.color_space)
-                .image_format(surface_format.format)
-                .image_extent(surface_resolution)
-                .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-                .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-                .pre_transform(pre_transform)
-                .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-                .present_mode(present_mode)
-                .clipped(true)
-                .image_array_layers(1);
+        let terrain_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Terrain Vertex Buffer"),
+            contents: bytemuck::cast_slice(&terrain_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let terrain_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Terrain Index Buffer"),
+            contents: bytemuck::cast_slice(&terrain_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
-            let swapchain = swapchain_loader
-                .create_swapchain(&swapchain_create_info, None)
-                .unwrap();
+        let cloud_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cloud Vertex Buffer"),
+            contents: bytemuck::cast_slice(&cloud_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let cloud_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Cloud Index Buffer"),
+            contents: bytemuck::cast_slice(&cloud_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
-            let pool_create_info = vk::CommandPoolCreateInfo::default()
-                .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-                .queue_family_index(queue_family_index);
+        let initial_ubo = UniformBufferObject {
+            mvp: [[0.0; 4]; 4],
+            offset: 0.0,
+            padding: [0.0; 3],
+        };
 
-            let pool = device.create_command_pool(&pool_create_info, None).unwrap();
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[initial_ubo]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
-            let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::default()
-                .command_buffer_count(3)
-                .command_pool(pool)
-                .level(vk::CommandBufferLevel::PRIMARY);
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("uniform_bind_group_layout"),
+            });
 
-            let command_buffers = device
-                .allocate_command_buffers(&command_buffer_allocate_info)
-                .unwrap();
-            let setup_command_buffer = command_buffers[0];
-            let draw_command_buffers = vec![command_buffers[1], command_buffers[2]];
+        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+            label: Some("uniform_bind_group"),
+        });
 
-            let present_images = swapchain_loader.get_swapchain_images(swapchain).unwrap();
-            let present_image_views: Vec<vk::ImageView> = present_images
-                .iter()
-                .map(|&image| {
-                    let create_view_info = vk::ImageViewCreateInfo::default()
-                        .view_type(vk::ImageViewType::TYPE_2D)
-                        .format(surface_format.format)
-                        .components(vk::ComponentMapping {
-                            r: vk::ComponentSwizzle::R,
-                            g: vk::ComponentSwizzle::G,
-                            b: vk::ComponentSwizzle::B,
-                            a: vk::ComponentSwizzle::A,
-                        })
-                        .subresource_range(vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        })
-                        .image(image);
-                    device.create_image_view(&create_view_info, None).unwrap()
-                })
-                .collect();
-            let device_memory_properties = instance.get_physical_device_memory_properties(pdevice);
-            let depth_image_create_info = vk::ImageCreateInfo::default()
-                .image_type(vk::ImageType::TYPE_2D)
-                .format(vk::Format::D16_UNORM)
-                .extent(surface_resolution.into())
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(vk::SampleCountFlags::TYPE_1)
-                .tiling(vk::ImageTiling::OPTIMAL)
-                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Terrain Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shader/terrain.wgsl").into()),
+        });
 
-            let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
-            let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-            let depth_image_memory_index = find_memorytype_index(
-                &depth_image_memory_req,
-                &device_memory_properties,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )
-            .expect("Unable to find suitable memory index for depth image.");
+        let cloud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Cloud Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shader/cloud.wgsl").into()),
+        });
 
-            let depth_image_allocate_info = vk::MemoryAllocateInfo::default()
-                .allocation_size(depth_image_memory_req.size)
-                .memory_type_index(depth_image_memory_index);
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&uniform_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
-            let depth_image_memory = device
-                .allocate_memory(&depth_image_allocate_info, None)
-                .unwrap();
+        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Terrain Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &terrain_shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &terrain_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None, // Or Some(wgpu::Face::Back)
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
 
-            device
-                .bind_image_memory(depth_image, depth_image_memory, 0)
-                .expect("Unable to bind depth image memory");
+        let cloud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Cloud Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cloud_shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &cloud_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+        });
 
-            let fence_create_info =
-                vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        #[cfg(target_arch = "wasm32")]
+        let start_time_wasm = web_sys::window().unwrap().performance().unwrap().now();
 
-            let draw_commands_reuse_fences = vec![
-                device
-                    .create_fence(&fence_create_info, None)
-                    .expect("Create fence failed."),
-                device
-                    .create_fence(&fence_create_info, None)
-                    .expect("Create fence failed."),
-            ];
-            let setup_commands_reuse_fence = device
-                .create_fence(&fence_create_info, None)
-                .expect("Create fence failed.");
+        Self {
+            surface,
+            device,
+            queue,
+            config,
+            size,
+            window,
+            terrain_pipeline,
+            cloud_pipeline,
+            terrain_vertex_buffer,
+            terrain_index_buffer,
+            terrain_num_indices: terrain_indices.len() as u32,
+            cloud_vertex_buffer,
+            cloud_index_buffer,
+            cloud_num_indices: cloud_indices.len() as u32,
+            uniform_buffer,
+            uniform_bind_group,
 
-            record_submit_commandbuffer(
-                &device,
-                setup_command_buffer,
-                setup_commands_reuse_fence,
-                present_queue,
-                &[],
-                &[],
-                &[],
-                |device, setup_command_buffer| {
-                    let layout_transition_barriers = vk::ImageMemoryBarrier::default()
-                        .image(depth_image)
-                        .dst_access_mask(
-                            vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-                                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                        )
-                        .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .subresource_range(
-                            vk::ImageSubresourceRange::default()
-                                .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                                .layer_count(1)
-                                .level_count(1),
-                        );
+            depth_view,
 
-                    device.cmd_pipeline_barrier(
-                        setup_command_buffer,
-                        vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-                        vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[layout_transition_barriers],
-                    );
-                },
-            );
-
-            let depth_image_view_info = vk::ImageViewCreateInfo::default()
-                .subresource_range(
-                    vk::ImageSubresourceRange::default()
-                        .aspect_mask(vk::ImageAspectFlags::DEPTH)
-                        .level_count(1)
-                        .layer_count(1),
-                )
-                .image(depth_image)
-                .format(depth_image_create_info.format)
-                .view_type(vk::ImageViewType::TYPE_2D);
-
-            let depth_image_view = device
-                .create_image_view(&depth_image_view_info, None)
-                .unwrap();
-
-            let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-
-            let present_complete_semaphores = vec![
-                device
-                    .create_semaphore(&semaphore_create_info, None)
-                    .unwrap(),
-                device
-                    .create_semaphore(&semaphore_create_info, None)
-                    .unwrap(),
-            ];
-
-            let mut rendering_complete_semaphores = vec![];
-            for _ in 0..present_images.len() {
-                rendering_complete_semaphores.push(
-                    device
-                        .create_semaphore(&semaphore_create_info, None)
-                        .unwrap(),
-                );
-            }
-
-            Ok(Self {
-                event_loop: RefCell::new(event_loop),
-                entry,
-                instance,
-                device,
-                queue_family_index,
-                pdevice,
-                device_memory_properties,
-                window,
-                surface_loader,
-                surface_format,
-                present_queue,
-                surface_resolution,
-                swapchain_loader,
-                swapchain,
-                present_images,
-                present_image_views,
-                pool,
-                draw_command_buffers,
-                setup_command_buffer,
-                depth_image,
-                depth_image_view,
-                present_complete_semaphores,
-                rendering_complete_semaphores,
-                draw_commands_reuse_fences,
-                setup_commands_reuse_fence,
-                surface,
-                debug_call_back,
-                debug_utils_loader,
-                depth_image_memory,
-            })
+            #[cfg(target_arch = "wasm32")]
+            start_time_wasm,
+            #[cfg(not(target_arch = "wasm32"))]
+            start_time: Instant::now(),
         }
+    }
+
+    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+            let (_, depth_view) = create_depth_texture(&self.device, &self.config);
+            self.depth_view = depth_view;
+        }
+    }
+
+    fn update(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        let elapsed = ((web_sys::window().unwrap().performance().unwrap().now() - self.start_time_wasm) / 1000.0) as f32;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        let speed = 5.0; // Units per second
+        let offset = -elapsed * speed;
+
+        let window_width = self.config.width as f32;
+        let window_height = self.config.height as f32;
+
+        let view = Matrix4::look_at_rh(
+            Point3::new(0.0, 5.0, 0.0),
+            Point3::new(0.0, 4.0, -10.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        );
+        let proj = cgmath::perspective(
+            Deg(90.0),
+            if window_height > 0.0 { window_width / window_height } else { 1.0 },
+            0.1,
+            500.0,
+        );
+
+        let model = Matrix4::from_translation(Vector3::new(0.0, -2.0, 0.0));
+
+        let mvp = proj * view * model;
+
+        let ubo = UniformBufferObject {
+            mvp: mvp.into(),
+            offset,
+            padding: [0.0; 3],
+        };
+
+        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[ubo]));
+    }
+
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.3,
+                            g: 0.5,
+                            b: 0.8,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+
+            render_pass.set_pipeline(&self.terrain_pipeline);
+            render_pass.set_vertex_buffer(0, self.terrain_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.terrain_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.terrain_num_indices, 0, 0..1);
+
+            render_pass.set_pipeline(&self.cloud_pipeline);
+            render_pass.set_vertex_buffer(0, self.cloud_vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.cloud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..self.cloud_num_indices, 0, 0..1);
+        }
+
+        self.queue.submit(iter::once(encoder.finish()));
+        output.present();
+
+        Ok(())
     }
 }
 
-impl Drop for VulkanBase {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.device_wait_idle().unwrap();
-            for &semaphore in self.present_complete_semaphores.iter() {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            for &semaphore in self.rendering_complete_semaphores.iter() {
-                self.device.destroy_semaphore(semaphore, None);
-            }
-            for &fence in self.draw_commands_reuse_fences.iter() {
-                self.device.destroy_fence(fence, None);
-            }
-            self.device
-                .destroy_fence(self.setup_commands_reuse_fence, None);
-            self.device.free_memory(self.depth_image_memory, None);
-            self.device.destroy_image_view(self.depth_image_view, None);
-            self.device.destroy_image(self.depth_image, None);
-            for &image_view in self.present_image_views.iter() {
-                self.device.destroy_image_view(image_view, None);
-            }
-            self.device.destroy_command_pool(self.pool, None);
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-            self.device.destroy_device(None);
-            self.surface_loader.destroy_surface(self.surface, None);
-            self.debug_utils_loader
-                .destroy_debug_utils_messenger(self.debug_call_back, None);
-            self.instance.destroy_instance(None);
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
+pub async fn run() {
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "wasm32")] {
+            std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+            console_log::init_with_level(log::Level::Warn).expect("Could't initialize logger");
+        } else {
+            env_logger::init();
         }
     }
+
+    let event_loop = EventLoop::new().unwrap();
+    let window = WindowBuilder::new()
+        .with_title("Mountain Flyby Demo")
+        .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+        .build(&event_loop)
+        .unwrap();
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| {
+                let dst = doc.get_element_by_id("wasm-example")?;
+                let canvas = web_sys::Element::from(window.canvas().unwrap());
+                dst.append_child(&canvas).ok()?;
+                Some(())
+            })
+            .expect("Couldn't append canvas to document body.");
+    }
+
+    let mut state = State::new(&window).await;
+
+    event_loop.run(move |event, elwt| {
+        match event {
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == state.window.id() => {
+                match event {
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                logical_key: Key::Named(NamedKey::Escape),
+                                ..
+                            },
+                        ..
+                    } => elwt.exit(),
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size);
+                    }
+                    WindowEvent::RedrawRequested => {
+                        state.update();
+                        match state.render() {
+                            Ok(_) => {}
+                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => state.resize(state.size),
+                            Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
+                            Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::AboutToWait => {
+                state.window.request_redraw();
+            }
+            _ => {}
+        }
+    }).unwrap();
 }
