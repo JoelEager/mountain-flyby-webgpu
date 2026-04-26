@@ -1,9 +1,12 @@
-# Mountain Flyby
-A procedurally generated graphics demo implemented in Rust. Originally targeted Vulkan, now completely rewritten to use WebGPU via `wgpu` to target both native execution and WebAssembly in the browser.
+# Mountain Flyby WebGPU
+A procedurally generated graphics demo implemented in Rust using [WebGPU](https://webgpu.org/) 
+which supports both native execution and browsers via WebAssembly. Based on a 
+[prior version of this demo which used Vulkan](https://github.com/JoelEager/Mountain-Flyby). 
 Developed using [Google Jules](https://jules.google.com/).
 
 ## Native Setup
-Running the application natively is straightforward as `wgpu` handles the graphics backend automatically.
+Running the application natively is straightforward as `wgpu` handles the 
+graphics backend automatically.
 
 ```bash
 cargo run
@@ -22,7 +25,8 @@ To run the demo in a browser via WebAssembly, you need to install `wasm-pack`.
    wasm-pack build --target web
    ```
 
-3. Serve the directory with an HTTP server (e.g., using Python 3). The project already includes an `index.html` file configured to load the compiled WebAssembly.
+3. Serve the directory with an HTTP server such as Python. The project already 
+includes an `index.html` file configured to load the compiled WebAssembly.
    ```bash
    python3 -m http.server 8000
    ```
@@ -30,4 +34,4 @@ To run the demo in a browser via WebAssembly, you need to install `wasm-pack`.
 4. Open your browser and navigate to `http://localhost:8000`.
 
 ## Shaders
-The project uses WGSL shaders (`.wgsl` files) located in the `shader/` directory. They are compiled at runtime by `wgpu`, so there is no need to manually pre-compile them.
+The project uses WGSL shaders which are compiled at runtime by `wgpu`.
