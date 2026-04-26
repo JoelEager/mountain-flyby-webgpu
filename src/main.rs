@@ -57,6 +57,72 @@ struct State<'a> {
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+fn create_render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    config_format: wgpu::TextureFormat,
+    label: &str,
+    blend_state: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: "vs_main",
+            buffers: &[Vertex::desc()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: config_format,
+                blend: Some(blend_state),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+    })
+}
+
+fn create_buffer<T: bytemuck::Pod>(
+    device: &wgpu::Device,
+    label: &str,
+    contents: &[T],
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    use wgpu::util::DeviceExt;
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(contents),
+        usage,
+    })
+}
+
 fn create_depth_texture(
     device: &wgpu::Device,
     config: &wgpu::SurfaceConfiguration,
@@ -142,27 +208,31 @@ impl<'a> State<'a> {
 
         use wgpu::util::DeviceExt;
 
-        let terrain_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Terrain Vertex Buffer"),
-            contents: bytemuck::cast_slice(&terrain_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let terrain_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Terrain Index Buffer"),
-            contents: bytemuck::cast_slice(&terrain_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let terrain_vertex_buffer = create_buffer(
+            &device,
+            "Terrain Vertex Buffer",
+            &terrain_vertices,
+            wgpu::BufferUsages::VERTEX,
+        );
+        let terrain_index_buffer = create_buffer(
+            &device,
+            "Terrain Index Buffer",
+            &terrain_indices,
+            wgpu::BufferUsages::INDEX,
+        );
 
-        let cloud_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cloud Vertex Buffer"),
-            contents: bytemuck::cast_slice(&cloud_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let cloud_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Cloud Index Buffer"),
-            contents: bytemuck::cast_slice(&cloud_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let cloud_vertex_buffer = create_buffer(
+            &device,
+            "Cloud Vertex Buffer",
+            &cloud_vertices,
+            wgpu::BufferUsages::VERTEX,
+        );
+        let cloud_index_buffer = create_buffer(
+            &device,
+            "Cloud Index Buffer",
+            &cloud_indices,
+            wgpu::BufferUsages::INDEX,
+        );
 
         let initial_ubo = UniformBufferObject {
             mvp: [[0.0; 4]; 4],
@@ -217,91 +287,23 @@ impl<'a> State<'a> {
                 push_constant_ranges: &[],
             });
 
-        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Terrain Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &terrain_shader,
-                entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &terrain_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None, // Or Some(wgpu::Face::Back)
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
+        let terrain_pipeline = create_render_pipeline(
+            &device,
+            &render_pipeline_layout,
+            &terrain_shader,
+            config.format,
+            "Terrain Pipeline",
+            wgpu::BlendState::REPLACE,
+        );
 
-        let cloud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Cloud Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &cloud_shader,
-                entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &cloud_shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                unclipped_depth: false,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
+        let cloud_pipeline = create_render_pipeline(
+            &device,
+            &render_pipeline_layout,
+            &cloud_shader,
+            config.format,
+            "Cloud Pipeline",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
 
         #[cfg(target_arch = "wasm32")]
         let start_time_wasm = web_sys::window().unwrap().performance().unwrap().now();
