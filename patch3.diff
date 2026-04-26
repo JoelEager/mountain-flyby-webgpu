@@ -1,0 +1,61 @@
+<<<<<<< SEARCH
+struct State<'a> {
+    surface: wgpu::Surface<'a>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: winit::dpi::PhysicalSize<u32>,
+    window: &'a Window,
+    terrain_pipeline: wgpu::RenderPipeline,
+=======
+struct State<'a> {
+    surface: wgpu::Surface<'a>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: winit::dpi::PhysicalSize<u32>,
+    window: std::sync::Arc<Window>,
+    terrain_pipeline: wgpu::RenderPipeline,
+>>>>>>> REPLACE
+<<<<<<< SEARCH
+impl<'a> State<'a> {
+    async fn new(window: &'a Window) -> State<'a> {
+=======
+impl<'a> State<'a> {
+    async fn new(window: std::sync::Arc<Window>) -> State<'a> {
+>>>>>>> REPLACE
+<<<<<<< SEARCH
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window).unwrap();
+=======
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window.clone()).unwrap();
+>>>>>>> REPLACE
+<<<<<<< SEARCH
+    let window = WindowBuilder::new()
+        .with_title("Mountain Flyby Demo")
+        .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+        .build(&event_loop)
+        .unwrap();
+=======
+    let window = std::sync::Arc::new(
+        WindowBuilder::new()
+            .with_title("Mountain Flyby Demo")
+            .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+            .build(&event_loop)
+            .unwrap()
+    );
+>>>>>>> REPLACE
+<<<<<<< SEARCH
+    let mut state = State::new(&window).await;
+=======
+    let mut state = State::new(window.clone()).await;
+>>>>>>> REPLACE

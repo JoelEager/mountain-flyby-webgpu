@@ -1,8 +1,11 @@
 use crate::Vertex;
 
 pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
+    // The mesh will have this many vertices per side
     let width = 128;
     let depth = 1024;
+
+    // The vertices will be spaced by this distance
     let scale = 0.5;
 
     let mut vertices = Vec::with_capacity(width * depth);
@@ -13,6 +16,8 @@ pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
             let px = (x as f32 - width as f32 / 2.0) * scale;
             let pz = -(z as f32) * scale;
 
+            // Note: The height (pos.y) and color values are entirely computed in the vertex shader (shader/landscape.vert).
+            // We only need to provide the X and Z grid coordinates here.
             vertices.push(Vertex {
                 pos: [px, 0.0, pz, 1.0],
             });
@@ -26,10 +31,12 @@ pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
             let bottom_left = ((z + 1) * width + x) as u32;
             let bottom_right = bottom_left + 1;
 
+            // First triangle
             indices.push(top_left);
             indices.push(bottom_left);
             indices.push(top_right);
 
+            // Second triangle
             indices.push(top_right);
             indices.push(bottom_left);
             indices.push(bottom_right);
@@ -40,8 +47,11 @@ pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
 }
 
 pub fn generate_clouds() -> (Vec<Vertex>, Vec<u32>) {
+    // The mesh will have this many vertices per side
     let width = 256;
     let depth = 1024;
+
+    // The vertices will be spaced by this distance
     let scale = 1.0;
 
     let mut vertices = Vec::with_capacity(width * depth);
@@ -65,10 +75,12 @@ pub fn generate_clouds() -> (Vec<Vertex>, Vec<u32>) {
             let bottom_left = ((z + 1) * width + x) as u32;
             let bottom_right = bottom_left + 1;
 
+            // First triangle
             indices.push(top_left);
             indices.push(bottom_left);
             indices.push(top_right);
 
+            // Second triangle
             indices.push(top_right);
             indices.push(bottom_left);
             indices.push(bottom_right);
@@ -97,6 +109,7 @@ mod tests {
         assert_eq!(cloud_vertices.len(), c_width * c_depth);
         assert_eq!(cloud_indices.len(), (c_width - 1) * (c_depth - 1) * 6);
 
+        // Check if all indices are valid
         for &index in &terrain_indices {
             assert!(
                 (index as usize) < terrain_vertices.len(),
@@ -114,6 +127,7 @@ mod tests {
             );
         }
 
+        // Check vertex w components
         for i in 0..(t_width * t_depth) {
             assert_eq!(
                 terrain_vertices[i].pos[3], 1.0,
@@ -129,6 +143,7 @@ mod tests {
             );
         }
 
+        // Check some coordinate ranges for terrain
         let t_scale = 0.5;
         let t_max_x = (t_width as f32 - 1.0 - t_width as f32 / 2.0) * t_scale;
         let t_min_x = (0.0 - t_width as f32 / 2.0) * t_scale;

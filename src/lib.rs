@@ -47,7 +47,7 @@ struct State<'a> {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
-    window: &'a Window,
+    window: std::sync::Arc<Window>,
     terrain_pipeline: wgpu::RenderPipeline,
     cloud_pipeline: wgpu::RenderPipeline,
     terrain_vertex_buffer: wgpu::Buffer,
@@ -92,7 +92,7 @@ fn create_depth_texture(
 }
 
 impl<'a> State<'a> {
-    async fn new(window: &'a Window) -> State<'a> {
+    async fn new(window: std::sync::Arc<Window>) -> State<'a> {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -100,7 +100,7 @@ impl<'a> State<'a> {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window).unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -464,11 +464,11 @@ pub async fn run() {
     }
 
     let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new()
+    let window = std::sync::Arc::new(WindowBuilder::new()
         .with_title("Mountain Flyby Demo")
         .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
         .build(&event_loop)
-        .unwrap();
+        .unwrap());
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -484,7 +484,7 @@ pub async fn run() {
             .expect("Couldn't append canvas to document body.");
     }
 
-    let mut state = State::new(&window).await;
+    let mut state = State::new(window.clone()).await;
 
     event_loop.run(move |event, elwt| {
         match event {
