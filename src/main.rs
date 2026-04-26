@@ -359,11 +359,16 @@ impl<'a> State<'a> {
         let window_width = self.config.width as f32;
         let window_height = self.config.height as f32;
 
+        // Create the Model-View-Projection matrix
         let view = Matrix4::look_at_rh(
+            // Eye: Position of the camera in world space
             Point3::new(0.0, 5.0, 0.0),
+            // Center: Where the camera is looking
             Point3::new(0.0, 4.0, -10.0),
+            // Up: Which way is "up" for the camera
             Vector3::new(0.0, 1.0, 0.0),
         );
+        // The last two arguments set the near and far clipping planes
         let proj = cgmath::perspective(
             Deg(90.0),
             if window_height > 0.0 {
@@ -374,9 +379,7 @@ impl<'a> State<'a> {
             0.1,
             500.0,
         );
-
         let model = Matrix4::from_translation(Vector3::new(0.0, -2.0, 0.0));
-
         let mvp = proj * view * model;
 
         let ubo = UniformBufferObject {
@@ -408,7 +411,7 @@ impl<'a> State<'a> {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {         // Sky blue background
                             r: 0.3,
                             g: 0.5,
                             b: 0.8,
