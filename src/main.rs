@@ -1,19 +1,19 @@
+use bytemuck::{Pod, Zeroable};
+use cgmath::{Deg, Matrix4, Point3, Vector3};
+use mountain_flyby::*;
 use std::iter;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
-use bytemuck::{Pod, Zeroable};
-use cgmath::{Deg, Matrix4, Point3, Vector3};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 use winit::{
     event::*,
     event_loop::EventLoop,
     keyboard::{Key, NamedKey},
-    window::{WindowBuilder, Window},
+    window::{Window, WindowBuilder},
 };
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-use mountain_flyby::mesh::{self, Vertex};
+mod mesh;
 
 /// Uniform buffer data passed to the shaders.
 ///
@@ -346,7 +346,9 @@ impl<'a> State<'a> {
 
     fn update(&mut self) {
         #[cfg(target_arch = "wasm32")]
-        let elapsed = ((web_sys::window().unwrap().performance().unwrap().now() - self.start_time_wasm) / 1000.0) as f32;
+        let elapsed = ((web_sys::window().unwrap().performance().unwrap().now()
+            - self.start_time_wasm)
+            / 1000.0) as f32;
 
         #[cfg(not(target_arch = "wasm32"))]
         let elapsed = self.start_time.elapsed().as_secs_f32();
@@ -364,7 +366,11 @@ impl<'a> State<'a> {
         );
         let proj = cgmath::perspective(
             Deg(90.0),
-            if window_height > 0.0 { window_width / window_height } else { 1.0 },
+            if window_height > 0.0 {
+                window_width / window_height
+            } else {
+                1.0
+            },
             0.1,
             500.0,
         );
@@ -379,7 +385,8 @@ impl<'a> State<'a> {
             padding: [0.0; 3],
         };
 
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[ubo]));
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[ubo]));
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -426,12 +433,16 @@ impl<'a> State<'a> {
 
             render_pass.set_pipeline(&self.terrain_pipeline);
             render_pass.set_vertex_buffer(0, self.terrain_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.terrain_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.set_index_buffer(
+                self.terrain_index_buffer.slice(..),
+                wgpu::IndexFormat::Uint32,
+            );
             render_pass.draw_indexed(0..self.terrain_num_indices, 0, 0..1);
 
             render_pass.set_pipeline(&self.cloud_pipeline);
             render_pass.set_vertex_buffer(0, self.cloud_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.cloud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass
+                .set_index_buffer(self.cloud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.cloud_num_indices, 0, 0..1);
         }
 
@@ -458,11 +469,13 @@ pub async fn run() {
     }
 
     let event_loop = EventLoop::new().unwrap();
-    let window = std::sync::Arc::new(WindowBuilder::new()
-        .with_title("Mountain Flyby Demo")
-        .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
-        .build(&event_loop)
-        .unwrap());
+    let window = std::sync::Arc::new(
+        WindowBuilder::new()
+            .with_title("Mountain Flyby Demo")
+            .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+            .build(&event_loop)
+            .unwrap(),
+    );
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -480,44 +493,44 @@ pub async fn run() {
 
     let mut state = State::new(window.clone()).await;
 
-    event_loop.run(move |event, elwt| {
-        match event {
+    event_loop
+        .run(move |event, elwt| match event {
             Event::WindowEvent {
                 ref event,
                 window_id,
-            } if window_id == state.window.id() => {
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                state: ElementState::Pressed,
-                                logical_key: Key::Named(NamedKey::Escape),
-                                ..
-                            },
-                        ..
-                    } => elwt.exit(),
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    }
-                    WindowEvent::RedrawRequested => {
-                        state.update();
-                        match state.render() {
-                            Ok(_) => {}
-                            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => state.resize(state.size),
-                            Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
-                            Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
-                        }
-                    }
-                    _ => {}
+            } if window_id == state.window.id() => match event {
+                WindowEvent::CloseRequested
+                | WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            state: ElementState::Pressed,
+                            logical_key: Key::Named(NamedKey::Escape),
+                            ..
+                        },
+                    ..
+                } => elwt.exit(),
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(*physical_size);
                 }
-            }
+                WindowEvent::RedrawRequested => {
+                    state.update();
+                    match state.render() {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            state.resize(state.size)
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
+                        Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
+                    }
+                }
+                _ => {}
+            },
             Event::AboutToWait => {
                 state.window.request_redraw();
             }
             _ => {}
-        }
-    }).unwrap();
+        })
+        .unwrap();
 }
 
 /// Main entry point of the application.
