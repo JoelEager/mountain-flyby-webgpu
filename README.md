@@ -22,33 +22,12 @@ To run the demo in a browser via WebAssembly, you need to install `wasm-pack`.
    wasm-pack build --target web
    ```
 
-3. Create an `index.html` file in the root of the project with the following content:
-   ```html
-   <!DOCTYPE html>
-   <html lang="en">
-   <head>
-       <meta charset="UTF-8">
-       <title>Mountain Flyby</title>
-       <style>
-           body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; }
-           canvas { display: block; max-width: 100%; max-height: 100vh; }
-       </style>
-   </head>
-   <body id="wasm-example">
-       <script type="module">
-           import init from './pkg/mountain_flyby.js';
-           init();
-       </script>
-   </body>
-   </html>
-   ```
-
-4. Serve the directory with an HTTP server (e.g., using Python 3):
+3. Serve the directory with an HTTP server (e.g., using Python 3). The project already includes an `index.html` file configured to load the compiled WebAssembly.
    ```bash
    python3 -m http.server 8000
    ```
 
-5. Open your browser and navigate to `http://localhost:8000`.
+4. Open your browser and navigate to `http://localhost:8000`.
 
 ## Shaders
 The project uses WGSL shaders (`.wgsl` files) located in the `shader/` directory. They are compiled at runtime by `wgpu`, so there is no need to manually pre-compile them.

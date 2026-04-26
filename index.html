@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Mountain Flyby</title>
+    <style>
+        body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { display: block; max-width: 100%; max-height: 100vh; }
+    </style>
+</head>
+<body id="wasm-example">
+    <script type="module">
+        import init from './pkg/mountain_flyby.js';
+        init();
+    </script>
+</body>
+</html>
