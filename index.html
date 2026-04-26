@@ -4,11 +4,27 @@
     <meta charset="UTF-8">
     <title>Mountain Flyby</title>
     <style>
-        body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; position: relative; }
         canvas { display: block; max-width: 100%; max-height: 100vh; }
+        #overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            pointer-events: none;
+        }
+        #overlay h1 { margin: 0 0 10px 0; font-size: 24px; }
+        #overlay p { margin: 0; font-size: 14px; }
     </style>
 </head>
 <body id="wasm-example">
+    <div id="overlay">
+        <h1>Mountain Flyby</h1>
+        <p>A procedurally generated graphics demo implemented in Rust.</p>
+    </div>
     <script type="module">
         import init from './pkg/mountain_flyby.js';
         init();
