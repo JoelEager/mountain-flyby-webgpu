@@ -86,5 +86,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    let linear_color = pow(in.color, vec3<f32>(2.2, 2.2, 2.2));
+    return vec4<f32>(linear_color, 1.0);
 }

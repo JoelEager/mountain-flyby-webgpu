@@ -409,9 +409,9 @@ impl<'a> State<'a> {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.3,
-                            g: 0.5,
-                            b: 0.8,
+                            r: 0.3f64.powf(2.2),
+                            g: 0.5f64.powf(2.2),
+                            b: 0.8f64.powf(2.2),
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
