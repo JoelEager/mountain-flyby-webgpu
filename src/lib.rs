@@ -506,7 +506,7 @@ impl State {
         }
 
         self.queue.submit(iter::once(encoder.finish()));
-        // `SurfaceTexture` presents automatically when dropped.
+        self.queue.present(output);
     }
 }
 
