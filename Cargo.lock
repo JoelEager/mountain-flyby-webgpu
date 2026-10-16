@@ -902,8 +902,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mountain-flyby"
-version = "0.1.0"
+name = "mountain-flyby-webgpu"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "cfg-if",

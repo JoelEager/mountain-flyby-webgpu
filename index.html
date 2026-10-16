@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <link data-trunk rel="rust" data-target-name="mountain_flyby" />
+    <link data-trunk rel="rust" data-target-name="mountain_flyby_webgpu" />
     <title>Mountain Flyby</title>
     <style>
         body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; position: relative; }
@@ -17,6 +17,7 @@
             border-radius: 8px;
             pointer-events: none;
         }
+        #overlay a { pointer-events: auto; }
         #overlay h1 { margin: 0 0 10px 0; font-size: 24px; }
         #overlay p { margin: 0; font-size: 14px; }
     </style>
@@ -24,7 +25,10 @@
 <body id="wasm-example">
     <div id="overlay">
         <h1>Mountain Flyby</h1>
-        <p>A procedurally generated graphics demo implemented in Rust.</p>
+        <p>
+            A procedurally generated graphics demo implemented in Rust. 
+            <a href="https://github.com/JoelEager/Mountain-Flyby-WebGPU" target="_blank" style="color: #4da6ff;">Repository here</a>.
+        </p>
     </div>
 
 </body>
