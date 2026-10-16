@@ -215,7 +215,12 @@ impl State {
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
+                )
+            })
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
