@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <link data-trunk rel="rust" data-target-name="mountain_flyby" />
     <title>Mountain Flyby</title>
     <style>
         body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; position: relative; }
@@ -25,9 +26,6 @@
         <h1>Mountain Flyby</h1>
         <p>A procedurally generated graphics demo implemented in Rust.</p>
     </div>
-    <script type="module">
-        import init from './pkg/mountain_flyby.js';
-        init().catch(e => console.error('wasm init failed:', e));
-    </script>
+
 </body>
 </html>
