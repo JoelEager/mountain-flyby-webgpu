@@ -17,8 +17,10 @@ To run the demo in a browser via WebAssembly, you need to install `wasm-pack`.
 
 1. Install `wasm-pack`:
    ```bash
-   cargo install wasm-pack
+   cargo install wasm-pack --locked
    ```
+   (`--locked` is required because resolving `wasm-pack`'s dependencies fresh
+   currently fails: the `zip` versions it requests have been yanked.)
 
 2. Build the project for the web:
    ```bash
