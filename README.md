@@ -3,6 +3,8 @@ A procedurally generated graphics demo implemented in Rust using [WebGPU](https:
 which supports both native execution and browsers via WebAssembly. Based on a 
 [prior version of this demo which used Vulkan](https://github.com/JoelEager/Mountain-Flyby).
 
+[See it live here](https://joeleager.me/mountain-flyby.html).
+
 ## Native Setup
 Running the application natively is straightforward as `wgpu` handles the 
 graphics backend automatically.
