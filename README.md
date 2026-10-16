@@ -1,8 +1,7 @@
 # Mountain Flyby WebGPU
 A procedurally generated graphics demo implemented in Rust using [WebGPU](https://webgpu.org/) 
 which supports both native execution and browsers via WebAssembly. Based on a 
-[prior version of this demo which used Vulkan](https://github.com/JoelEager/Mountain-Flyby). 
-Developed using [Google Jules](https://jules.google.com/).
+[prior version of this demo which used Vulkan](https://github.com/JoelEager/Mountain-Flyby).
 
 ## Native Setup
 Running the application natively is straightforward as `wgpu` handles the 
@@ -20,8 +19,7 @@ It manages the `wasm-bindgen` and `wasm-opt` toolchains automatically.
    ```bash
    cargo install trunk --locked
    ```
-   (`--locked` avoids failures when resolving tool dependencies such as `zip`,
-   some versions of which have been yanked.)
+   (`--locked` prevents dependency resolution issues.)
 
 2. Build and serve with live reload during development:
    ```bash
