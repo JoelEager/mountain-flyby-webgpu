@@ -1,11 +1,10 @@
 use crate::Vertex;
 
-/// Generates a procedural terrain mesh grid.
+/// Generates a procedural mesh grid.
 ///
-/// The terrain consists of a 2D grid of vertices. The height (y-coordinate)
-/// and color are computed entirely in the vertex shader. The `w` component of
-/// the position vector is set to 1.0 to indicate that this is the terrain.
-fn generate_grid(width: usize, depth: usize, scale: f32, w_coord: f32) -> (Vec<Vertex>, Vec<u32>) {
+/// The mesh is a 2D grid of vertices; the height (y-coordinate) and color are
+/// computed entirely in the vertex shader, so only `x` and `z` carry meaning.
+fn generate_grid(width: usize, depth: usize, scale: f32) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::with_capacity(width * depth);
     let mut indices = Vec::with_capacity((width - 1) * (depth - 1) * 6);
 
@@ -14,9 +13,7 @@ fn generate_grid(width: usize, depth: usize, scale: f32, w_coord: f32) -> (Vec<V
             let px = (x as f32 - width as f32 / 2.0) * scale;
             let pz = -(z as f32) * scale;
 
-            vertices.push(Vertex {
-                pos: [px, 0.0, pz, w_coord],
-            });
+            vertices.push(Vertex { pos: [px, 0.0, pz] });
         }
     }
 
@@ -46,17 +43,15 @@ pub fn generate_terrain() -> (Vec<Vertex>, Vec<u32>) {
     // The vertices will be spaced by this distance
     let scale = 0.5;
 
-    // Note: The height (pos.y) and color values are entirely computed in the vertex shader (shader/landscape.vert).
+    // Note: The height (pos.y) and color values are entirely computed in the vertex shader.
     // We only need to provide the X and Z grid coordinates here.
-    generate_grid(width, depth, scale, 1.0)
+    generate_grid(width, depth, scale)
 }
 
 /// Generates a procedural cloud mesh grid.
 ///
 /// Similar to the terrain, the cloud mesh is a 2D grid. The actual shape and
 /// appearance of the clouds are generated procedurally in the shaders.
-/// The `w` component of the position vector is set to 2.0 to indicate that
-/// this mesh represents the clouds.
 pub fn generate_clouds() -> (Vec<Vertex>, Vec<u32>) {
     // The mesh will have this many vertices per side
     let width = 256;
@@ -65,7 +60,7 @@ pub fn generate_clouds() -> (Vec<Vertex>, Vec<u32>) {
     // The vertices will be spaced by this distance
     let scale = 1.0;
 
-    generate_grid(width, depth, scale, 2.0)
+    generate_grid(width, depth, scale)
 }
 
 #[cfg(test)]
@@ -105,22 +100,6 @@ mod tests {
             );
         }
 
-        // Check vertex w components
-        for i in 0..(t_width * t_depth) {
-            assert_eq!(
-                terrain_vertices[i].pos[3], 1.0,
-                "Vertex {} should be ground (w=1.0)",
-                i
-            );
-        }
-        for i in 0..(c_width * c_depth) {
-            assert_eq!(
-                cloud_vertices[i].pos[3], 2.0,
-                "Vertex {} should be clouds (w=2.0)",
-                i
-            );
-        }
-
         // Check some coordinate ranges for terrain
         let t_scale = 0.5;
         let t_max_x = (t_width as f32 - 1.0 - t_width as f32 / 2.0) * t_scale;
@@ -154,27 +133,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_vertex_separation() {
-        let (terrain_vertices, _) = generate_terrain();
-        let (cloud_vertices, _) = generate_clouds();
-
-        let t_width = 128;
-        let t_depth = 1024;
-        let c_width = 256;
-        let c_depth = 1024;
-
-        for z in 0..t_depth {
-            for x in 0..t_width {
-                let idx = z * t_width + x;
-                assert_eq!(terrain_vertices[idx].pos[3], 1.0);
-            }
-        }
-        for z in 0..c_depth {
-            for x in 0..c_width {
-                let idx = z * c_width + x;
-                assert_eq!(cloud_vertices[idx].pos[3], 2.0);
-            }
-        }
-    }
 }

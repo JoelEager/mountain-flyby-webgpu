@@ -12,7 +12,7 @@ winit = "0.30"
 wgpu = "30"
 env_logger = "0.11"
 log = "0.4"
-pollster = "0.3"
+pollster = "1"
 bytemuck = { version = "1.16", features = ["derive"] }
 cfg-if = "1.0.4"
 
@@ -25,8 +25,12 @@ web-sys = { version = "0.3", features = [
     "Window",
     "Element",
     "HtmlCanvasElement", "Performance",
-    "Node",
 ] }
 
 [target.wasm32-unknown-unknown.dependencies]
 wasm-bindgen-futures = "0.4.68"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"

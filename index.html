@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <link data-trunk rel="rust" data-target-name="mountain_flyby_webgpu" />
+    <link data-trunk rel="rust" data-target-name="mountain_flyby_webgpu" data-wasm-opt="z" />
     <title>Mountain Flyby</title>
     <style>
         body { margin: 0; padding: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; position: relative; }
@@ -23,6 +23,7 @@
     </style>
 </head>
 <body id="wasm-example">
+    <canvas id="flyby-canvas"></canvas>
     <div id="overlay">
         <h1>Mountain Flyby</h1>
         <p>

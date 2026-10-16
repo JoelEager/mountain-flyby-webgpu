@@ -18,16 +18,16 @@ use winit::{
 
 /// Represents a single vertex in a mesh.
 ///
-/// Contains a 4D position vector. The `w` component is utilized by shaders
-/// to determine the type of object the vertex belongs to (e.g., terrain vs clouds).
+/// Contains a 3D grid position. Height and color are computed procedurally
+/// in the vertex shader; only `x` and `z` carry meaning here.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable, Default)]
 pub struct Vertex {
-    pub pos: [f32; 4],
+    pub pos: [f32; 3],
 }
 
 impl Vertex {
-    pub const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x4];
+    pub const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x3];
 
     pub fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -50,10 +50,18 @@ pub struct UniformBufferObject {
     pub padding: [f32; 3],
 }
 
+/// A drawable mesh: its render pipeline plus vertex/index buffers.
+struct MeshDraw {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
+}
+
 /// Holds the application and graphics state.
 ///
 /// Contains all `wgpu` resources including the device, queue, surface,
-/// rendering pipelines, buffers for terrain and clouds, and timing info.
+/// meshes, and timing info.
 struct State {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -61,19 +69,14 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: Arc<Window>,
-    terrain_pipeline: wgpu::RenderPipeline,
-    cloud_pipeline: wgpu::RenderPipeline,
-    terrain_vertex_buffer: wgpu::Buffer,
-    terrain_index_buffer: wgpu::Buffer,
-    terrain_num_indices: u32,
-    cloud_vertex_buffer: wgpu::Buffer,
-    cloud_index_buffer: wgpu::Buffer,
-    cloud_num_indices: u32,
+    meshes: Vec<MeshDraw>,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     #[cfg(target_arch = "wasm32")]
-    start_time_wasm: f64,
+    performance: web_sys::Performance,
+    #[cfg(target_arch = "wasm32")]
+    start_time: f64,
     #[cfg(not(target_arch = "wasm32"))]
     start_time: Instant,
 }
@@ -171,6 +174,117 @@ fn create_depth_texture(
     (texture, view)
 }
 
+/// Builds the surface configuration, preferring a non-sRGB 8-bit format so
+/// native and web render identically (WebGPU canvases can't be sRGB).
+fn surface_config(
+    surface: &wgpu::Surface,
+    adapter: &wgpu::Adapter,
+    size: winit::dpi::PhysicalSize<u32>,
+) -> wgpu::SurfaceConfiguration {
+    let caps = surface.get_capabilities(adapter);
+    let format = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
+        .unwrap_or(caps.formats[0]);
+
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        color_space: wgpu::SurfaceColorSpace::default(),
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: caps.present_modes[0],
+        desired_maximum_frame_latency: 2,
+        alpha_mode: caps.alpha_modes[0],
+        view_formats: vec![],
+    }
+}
+
+/// Creates the shared uniform buffer, its layout, and bind group.
+fn create_uniform_resources(
+    device: &wgpu::Device,
+) -> (wgpu::Buffer, wgpu::BindGroupLayout, wgpu::BindGroup) {
+    use wgpu::util::DeviceExt;
+
+    let initial_ubo = UniformBufferObject {
+        mvp: [[0.0; 4]; 4],
+        offset: 0.0,
+        padding: [0.0; 3],
+    };
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Uniform Buffer"),
+        contents: bytemuck::cast_slice(&[initial_ubo]),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+        label: Some("uniform_bind_group_layout"),
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+        label: Some("uniform_bind_group"),
+    });
+
+    (buffer, layout, bind_group)
+}
+
+/// Builds a shader module, pipeline, and vertex/index buffers for a mesh.
+fn create_mesh_draw(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    label: &str,
+    shader_source: &str,
+    blend_state: wgpu::BlendState,
+    (vertices, indices): (Vec<Vertex>, Vec<u32>),
+) -> MeshDraw {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+    });
+    let pipeline = create_render_pipeline(device, layout, &shader, format, label, blend_state);
+    let vertex_buffer = create_buffer(device, label, &vertices, wgpu::BufferUsages::VERTEX);
+    let index_buffer = create_buffer(device, label, &indices, wgpu::BufferUsages::INDEX);
+    MeshDraw {
+        pipeline,
+        vertex_buffer,
+        index_buffer,
+        num_indices: indices.len() as u32,
+    }
+}
+
+/// Shows a "WebGPU unavailable" message in the page overlay when no adapter
+/// can be found (e.g., the browser doesn't support WebGPU).
+#[cfg(target_arch = "wasm32")]
+fn show_webgpu_error(err: &wgpu::RequestAdapterError) {
+    if let Some(overlay) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("overlay"))
+    {
+        overlay.set_inner_html(&format!(
+            "<h1>WebGPU unavailable</h1><p>This demo requires a browser with WebGPU support. \
+             Try Chrome, Edge, or Firefox 141+. ({err})</p>"
+        ));
+    }
+}
+
 impl State {
     async fn new(window: Arc<Window>) -> State {
         #[cfg(target_arch = "wasm32")]
@@ -189,7 +303,7 @@ impl State {
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
@@ -197,7 +311,14 @@ impl State {
                 ..Default::default()
             })
             .await
-            .unwrap();
+        {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                #[cfg(target_arch = "wasm32")]
+                show_webgpu_error(&err);
+                panic!("Couldn't find a WebGPU-capable adapter: {err}");
+            }
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -210,111 +331,13 @@ impl State {
             .await
             .unwrap();
 
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| {
-                matches!(
-                    f,
-                    wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm
-                )
-            })
-            .unwrap_or(surface_caps.formats[0]);
-
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
-            color_space: wgpu::SurfaceColorSpace::default(),
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: surface_caps.present_modes[0],
-            desired_maximum_frame_latency: 2,
-            alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-
+        let config = surface_config(&surface, &adapter, size);
         surface.configure(&device, &config);
 
         let (_, depth_view) = create_depth_texture(&device, &config);
 
-        let (terrain_vertices, terrain_indices) = mesh::generate_terrain();
-        let (cloud_vertices, cloud_indices) = mesh::generate_clouds();
-
-        use wgpu::util::DeviceExt;
-
-        let terrain_vertex_buffer = create_buffer(
-            &device,
-            "Terrain Vertex Buffer",
-            &terrain_vertices,
-            wgpu::BufferUsages::VERTEX,
-        );
-        let terrain_index_buffer = create_buffer(
-            &device,
-            "Terrain Index Buffer",
-            &terrain_indices,
-            wgpu::BufferUsages::INDEX,
-        );
-
-        let cloud_vertex_buffer = create_buffer(
-            &device,
-            "Cloud Vertex Buffer",
-            &cloud_vertices,
-            wgpu::BufferUsages::VERTEX,
-        );
-        let cloud_index_buffer = create_buffer(
-            &device,
-            "Cloud Index Buffer",
-            &cloud_indices,
-            wgpu::BufferUsages::INDEX,
-        );
-
-        let initial_ubo = UniformBufferObject {
-            mvp: [[0.0; 4]; 4],
-            offset: 0.0,
-            padding: [0.0; 3],
-        };
-
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[initial_ubo]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let uniform_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: Some("uniform_bind_group_layout"),
-            });
-
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-            label: Some("uniform_bind_group"),
-        });
-
-        let terrain_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Terrain Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shader/terrain.wgsl").into()),
-        });
-
-        let cloud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Cloud Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shader/cloud.wgsl").into()),
-        });
+        let (uniform_buffer, uniform_bind_group_layout, uniform_bind_group) =
+            create_uniform_resources(&device);
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -323,26 +346,31 @@ impl State {
                 immediate_size: 0,
             });
 
-        let terrain_pipeline = create_render_pipeline(
-            &device,
-            &render_pipeline_layout,
-            &terrain_shader,
-            config.format,
-            "Terrain Pipeline",
-            wgpu::BlendState::REPLACE,
-        );
-
-        let cloud_pipeline = create_render_pipeline(
-            &device,
-            &render_pipeline_layout,
-            &cloud_shader,
-            config.format,
-            "Cloud Pipeline",
-            wgpu::BlendState::ALPHA_BLENDING,
-        );
+        let meshes = vec![
+            create_mesh_draw(
+                &device,
+                &render_pipeline_layout,
+                config.format,
+                "Terrain",
+                include_str!("../shader/terrain.wgsl"),
+                wgpu::BlendState::REPLACE,
+                mesh::generate_terrain(),
+            ),
+            create_mesh_draw(
+                &device,
+                &render_pipeline_layout,
+                config.format,
+                "Cloud",
+                include_str!("../shader/cloud.wgsl"),
+                wgpu::BlendState::ALPHA_BLENDING,
+                mesh::generate_clouds(),
+            ),
+        ];
 
         #[cfg(target_arch = "wasm32")]
-        let start_time_wasm = web_sys::window().unwrap().performance().unwrap().now();
+        let performance = web_sys::window().unwrap().performance().unwrap();
+        #[cfg(target_arch = "wasm32")]
+        let start_time = performance.now();
 
         Self {
             surface,
@@ -351,21 +379,14 @@ impl State {
             config,
             size,
             window,
-            terrain_pipeline,
-            cloud_pipeline,
-            terrain_vertex_buffer,
-            terrain_index_buffer,
-            terrain_num_indices: terrain_indices.len() as u32,
-            cloud_vertex_buffer,
-            cloud_index_buffer,
-            cloud_num_indices: cloud_indices.len() as u32,
+            meshes,
             uniform_buffer,
             uniform_bind_group,
-
             depth_view,
-
             #[cfg(target_arch = "wasm32")]
-            start_time_wasm,
+            performance,
+            #[cfg(target_arch = "wasm32")]
+            start_time,
             #[cfg(not(target_arch = "wasm32"))]
             start_time: Instant::now(),
         }
@@ -384,9 +405,7 @@ impl State {
 
     fn update(&mut self) {
         #[cfg(target_arch = "wasm32")]
-        let elapsed = ((web_sys::window().unwrap().performance().unwrap().now()
-            - self.start_time_wasm)
-            / 1000.0) as f32;
+        let elapsed = ((self.performance.now() - self.start_time) / 1000.0) as f32;
 
         #[cfg(not(target_arch = "wasm32"))]
         let elapsed = self.start_time.elapsed().as_secs_f32();
@@ -495,19 +514,15 @@ impl State {
 
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
 
-            render_pass.set_pipeline(&self.terrain_pipeline);
-            render_pass.set_vertex_buffer(0, self.terrain_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(
-                self.terrain_index_buffer.slice(..),
-                wgpu::IndexFormat::Uint32,
-            );
-            render_pass.draw_indexed(0..self.terrain_num_indices, 0, 0..1);
-
-            render_pass.set_pipeline(&self.cloud_pipeline);
-            render_pass.set_vertex_buffer(0, self.cloud_vertex_buffer.slice(..));
-            render_pass
-                .set_index_buffer(self.cloud_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.cloud_num_indices, 0, 0..1);
+            for mesh in &self.meshes {
+                render_pass.set_pipeline(&mesh.pipeline);
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(
+                    mesh.index_buffer.slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+            }
         }
 
         self.queue.submit(iter::once(encoder.finish()));
@@ -528,34 +543,39 @@ struct App {
 
 impl ApplicationHandler<State> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+
         let window_attributes = Window::default_attributes()
             .with_title("Mountain Flyby Demo")
             .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0));
+
+        // Attach winit to the `<canvas>` declared in index.html rather than
+        // creating and appending one ourselves. `Window::inner_size()` reports
+        // 0 until winit's ResizeObserver fires, so give the canvas bitmap an
+        // explicit size up front.
+        #[cfg(target_arch = "wasm32")]
+        let window_attributes = {
+            use winit::platform::web::WindowAttributesExtWebSys;
+            let canvas = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id("flyby-canvas"))
+                .and_then(|e| e.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+                .expect("Couldn't find #flyby-canvas");
+            canvas.set_width(1920);
+            canvas.set_height(1080);
+            window_attributes.with_canvas(Some(canvas))
+        };
+
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         #[cfg(target_arch = "wasm32")]
-        {
-            use winit::platform::web::WindowExtWebSys;
-            web_sys::window()
-                .and_then(|win| win.document())
-                .and_then(|doc| {
-                    let canvas = window.canvas()?;
-                    // `Window::inner_size()` reports 0 until winit's ResizeObserver fires,
-                    // so give the canvas an explicit bitmap size up front.
-                    canvas.set_width(1920);
-                    canvas.set_height(1080);
-                    let dst = doc.get_element_by_id("wasm-example")?;
-                    dst.append_child(&web_sys::Element::from(canvas)).ok()?;
-                    Some(())
-                })
-                .expect("Couldn't append canvas to document body.");
-
-            if let Some(proxy) = self.proxy.take() {
-                wasm_bindgen_futures::spawn_local(async move {
-                    let state = State::new(window).await;
-                    assert!(proxy.send_event(state).is_ok());
-                });
-            }
+        if let Some(proxy) = self.proxy.take() {
+            wasm_bindgen_futures::spawn_local(async move {
+                let state = State::new(window).await;
+                assert!(proxy.send_event(state).is_ok());
+            });
         }
 
         #[cfg(not(target_arch = "wasm32"))]
